@@ -1,0 +1,282 @@
+- name: "Configure app server"
+  hosts: "localhost"
+  become: True
+  roles:
+  - angstwad.docker_ubuntu
+
+  vars_prompt:
+  - name: "confirmation"
+    prompt: "Do you accept the Rasa X terms and conditions? Please read them at https://storage.googleapis.com/rasa-x-releases/rasa_x_ce_license_agreement.pdf. Answer with YES if you agree."
+    default: "NO"
+    private: no
+
+  tasks:
+  - name: Status of Rasa X Enterprise license file
+    stat:
+      path: rasa-x-ee-license.yml
+    register: rasa_x_license_file
+
+  - name: Check if a license exists
+    debug:
+      msg: "There is no Rasa X Enterprise license file. We are going to install the Community Edition."
+    when: rasa_x_license_file.stat.exists == False
+
+  - name: Load configuration file of the customer (includes e.g. the license)
+    include_vars:
+      file: rasa-x-ee-license.yml
+      name: rasax
+    when: rasa_x_license_file.stat.exists
+
+  - name: Create Rasa X root directory
+    file:
+      path: /etc/rasa
+      state: directory
+
+  - name: Create Rasa X log directory
+    file:
+      path: /etc/rasa/logs
+      state: directory
+
+  - name: Create Rasa X scripts directory
+    file:
+      path: /etc/rasa/scripts
+      state: directory
+
+  - name: Create Rasa X mongo migration directory
+    file:
+      path: /etc/rasa/scripts/mongo_migration
+      state: directory
+
+  - name: Create the directory to store terms accept file
+    file:
+      path: /etc/rasa/terms
+      state: directory
+
+  - name: Create the directory for the database persistence
+    file:
+      path: /etc/rasa/db
+      state: directory
+      mode: 0750
+      owner: 1001
+      group: root
+
+  - name: Create the directory to store the certificate files
+    file:
+      path: /etc/rasa/certs
+      state: directory
+      mode: 0766
+      group: root
+
+  - name: check terms and conditions were accepted
+    assert:
+      that:
+      - confirmation == 'YES'
+      msg: "You need to accept the terms and conditions to run Rasa X. Please re-run the installation script and accept the terms"
+
+  - name: write agree file
+    shell: echo "${USER} $(date)" > /etc/rasa/terms/agree.txt
+    when: confirmation == 'YES'
+
+  - name: stat user credentials
+    stat: path=credentials
+    register: user_credentials_dir
+
+  - name: backwards compatible credentials
+    command: mv credentials /etc/rasa/credentials
+    when: user_credentials_dir.stat.exists
+
+  - name: Status of Rasa X credentials folder
+    stat:
+      path: /etc/rasa/credentials
+    register: rasa_x_credentials
+
+  - name: Status of Rasa X env file
+    stat:
+      path: /etc/rasa/.env
+    register: rasa_x_env
+
+  - name: Ensure we do not overwrite the env if we do not have the credentials
+    assert:
+      that:
+      - "not (rasa_x_env.stat.exists and not rasa_x_credentials.stat.exists)"
+      msg: "There is a Rasa X env (/etc/rasa/.env) but no folder containing the original credentials. To avoid overwriting the existing credentials in .env we ABORT. "
+
+  - name: Create the environment for the docker compose runner
+    copy:
+      content: |
+        PASSWORD_SALT={{ lookup('password', '/etc/rasa/credentials/password_salt length=15') }}
+        RASA_X_VERSION=stable
+        RASA_VERSION=1.0.0
+        RASA_X_DEMO_VERSION=0.19.0
+      dest: /etc/rasa/.env
+    when: rasa_x_env.stat.exists == False
+
+  - name: Status of deployment environments file
+    stat:
+      path: /etc/rasa/environments.yml
+    register: environments_file
+
+  - name: Create deployment environments file if not present
+    copy:
+      content: |
+        stack:
+          production:
+            url: http://rasa-production:5005
+            token: ${RASA_TOKEN}
+          worker:
+            url: http://rasa-worker:5005
+            token: ${RASA_TOKEN}
+
+      dest: /etc/rasa/environments.yml
+    when: environments_file.stat.exists == False
+
+  - name: Status of RabbitMQ credentials file
+    stat:
+      path: /etc/rasa/credentials/rabbit
+    register: rabbitmq_credentials
+
+  - name: Create RabbitMQ credentials if not present
+    lineinfile:
+      path: /etc/rasa/.env
+      line: "RABBITMQ_PASSWORD={{ lookup('password', '/etc/rasa/credentials/rabbit length=15') }}"
+    when: rabbitmq_credentials.stat.exists == False
+
+  - name: Status of RASA_X_TOKEN credentials file
+    stat:
+      path: /etc/rasa/credentials/rasa_x_token
+    register: rasa_x_token
+
+  - name: Create RASA_X_TOKEN credentials if not present
+    lineinfile:
+      path: /etc/rasa/.env
+      line: "RASA_X_TOKEN={{ lookup('password', '/etc/rasa/credentials/rasa_x_token chars=ascii_letters,digits length=15') }}"
+    when: rasa_x_token.stat.exists == False
+
+  - name: Status of JWT_SECRET credentials file
+    stat:
+      path: /etc/rasa/credentials/jwt_secret
+    register: jwt_secret
+
+  - name: Create JWT_SECRET credentials if not present
+    lineinfile:
+      path: /etc/rasa/.env
+      line: "JWT_SECRET={{ lookup('password', '/etc/rasa/credentials/jwt_secret chars=ascii_letters,digits length=25') }}"
+    when: jwt_secret.stat.exists == False
+
+  - name: Status of RASA_TOKEN credentials file
+    stat:
+      path: /etc/rasa/credentials/rasa_token
+    register: rasa_token
+
+  - name: Create RASA_TOKEN if not present
+    lineinfile:
+      path: /etc/rasa/.env
+      line: "RASA_TOKEN={{ lookup('password', '/etc/rasa/credentials/rasa_token chars=ascii_letters,digits length=15') }}"
+    when: rasa_token.stat.exists == False
+
+  - name: Status of db password credentials file
+    stat:
+      path: /etc/rasa/credentials/db
+    register: db_password
+
+  - name: Create DB_PASSWORD if not present
+    lineinfile:
+      path: /etc/rasa/.env
+      line: "DB_PASSWORD={{ lookup('password', '/etc/rasa/credentials/db length=15') }}"
+    when: db_password.stat.exists == False
+
+  - name: Status of channel credentials file
+    stat:
+      path: /etc/rasa/credentials.yml
+    register: credentials_file
+
+  - name: Create the environment for the docker compose runner
+    copy:
+      content: |
+        rasa:
+          url: ${RASA_X_HOST}
+      dest: /etc/rasa/credentials.yml
+    when: credentials_file.stat.exists == False
+
+  - name: Status of the Rasa Stack endpoint configuration file
+    stat:
+      path: /etc/rasa/endpoints.yml
+    register: stack_endpoints_file
+
+  - name: Create the endpoints configuration file for Rasa
+    copy:
+      content: |
+        models:
+          url: ${RASA_MODEL_SERVER}
+          token: ${RASA_X_TOKEN}
+          wait_time_between_pulls: ${RASA_MODEL_PULL_INTERVAL}
+        tracker_store:
+          type: sql
+          dialect: "postgresql"
+          url: ${DB_HOST}
+          port: ${DB_PORT}
+          username: ${DB_USER}
+          password: ${DB_PASSWORD}
+          db: ${DB_DATABASE}
+          login_db: ${DB_LOGIN_DB}
+        event_broker:
+          url: ${RABBITMQ_HOST}
+          username: ${RABBITMQ_USERNAME}
+          password: ${RABBITMQ_PASSWORD}
+        action_endpoint:
+          url: ${RASA_USER_APP}/webhook
+          token:  ""
+      dest: /etc/rasa/endpoints.yml
+    when: stack_endpoints_file.stat.exists == False
+
+  - name: Retrieve docker compose to run Rasa X Enterprise Edition
+    get_url:
+      url: https://storage.googleapis.com/rasa-x-releases/stable/docker-compose.ee.yml
+      dest: /etc/rasa/docker-compose.yml
+      mode: 0766
+      force: yes
+    when: rasa_x_license_file.stat.exists
+
+  - name: Retrieve docker compose to run Rasa X Community Edition
+    get_url:
+      url: https://storage.googleapis.com/rasa-x-releases/stable/docker-compose.ce.yml
+      dest: /etc/rasa/docker-compose.yml
+      mode: 0766
+      force: yes
+    when: rasa_x_license_file.stat.exists == False
+
+  - name: Retrieve the Rasa X commands file
+    get_url:
+      url: https://storage.googleapis.com/rasa-x-releases/stable/rasa_x_commands.py
+      dest: /etc/rasa/rasa_x_commands.py
+      mode: 0766
+      force: yes
+
+  - name: Dump gcr license to separate file
+    copy:
+      content: "{{rasax.docker_registry_license | from_json | to_nice_json}}"
+      dest: "/etc/rasa/gcr-auth.json"
+    when: rasa_x_license_file.stat.exists
+
+  - name: Log in to google cloud registry (gcr)
+    shell: "docker login -u _json_key -p {{rasax.docker_registry_license|quote}} https://gcr.io"
+    when: rasa_x_license_file.stat.exists
+
+  - name: Retrieve the Rasa X mongo to sql migration files
+    get_url:
+      url: https://storage.googleapis.com/rasa-x-releases/stable/scripts/mongo_migration/docker-compose.yml
+      dest: /etc/rasa/scripts/mongo_migration/docker-compose.yml
+      mode: 0766
+      force: yes
+
+  - name: Status of the Rasa Migration script .env file
+    stat:
+      path: /etc/rasa/scripts/mongo_migration/.env
+    register: mongo_migration_env_file
+
+  - name: Create a symbolic link to the root .env file in the migrations
+    file:
+      src: /etc/rasa/.env
+      dest: /etc/rasa/scripts/mongo_migration/.env
+      state: link
+    when: mongo_migration_env_file.stat.exists == False
